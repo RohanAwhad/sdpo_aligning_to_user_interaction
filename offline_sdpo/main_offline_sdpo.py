@@ -102,7 +102,7 @@ def main():
 
     # KL regularization is not used (kl_beta=0, ref_model=None).
     trainer = OfflineSDPOTrainer(
-        ignore_first_k=2,
+        ignore_first_k=0,
         model=model,
         ref_model=None,
         kl_beta=0,
