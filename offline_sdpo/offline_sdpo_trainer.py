@@ -59,24 +59,14 @@ class OfflineSDPOCollator:
             fb = ex["user_response"].get("value") or ex["user_response"].get("content")
             o = fb.strip()
             
-            # Used for all models except Qwen3-4B
-            # conditional_history = copy.deepcopy(clean_prompt)
-            # block = (
-            #     "\n\n[HINDSIGHT CONTEXT]\n"
-            #     "The following is a user response to your previous, insufficient attempt. Improve your response to the user prompt.\n" # Do not respond to the future user message.\n"
-            #     f"Future User Message: {o}"
-            # )
-            # conditional_history[-1]["content"] += block
-
-            # Used for Qwen3-4B
-            conditional_history.append({
-                "role": "assistant",
-                "content": (
-                "=== HINDSIGHT CONTEXT ===\n"
-                "[The following is a future user message. Use this to guide your answer to the user prompt.]\n"
-                f"{o}"
-                )
-            })
+            # Template C: matches paper Table 1.
+            # Hindsight context appended to the last user message.
+            conditional_history = copy.deepcopy(clean_prompt)
+            conditional_history[-1]["content"] += (
+                "\n\n=== HINDSIGHT CONTEXT ===\n"
+                "The following is a future user message. "
+                f"Use this to guide your answer to the user prompt: {o}"
+            )
 
 
             xo_text = self.tokenizer.apply_chat_template(
