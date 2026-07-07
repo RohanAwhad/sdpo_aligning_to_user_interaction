@@ -191,14 +191,14 @@ class OfflineSDPOTrainer(Trainer):
 
         # log pi(y | x, o) — hindsight (teacher)
         with torch.no_grad():
-            logps_xo, _, _, logits_xo = self._token_logps_of_given_y(
+            logps_xo, _, _, _ = self._token_logps_of_given_y(
                     context_texts=xo_texts,
                     completion_ids_list=completion_ids,
                     model=model,
                 )  # (B, C')
 
         # log pi(y | x) — base (student)
-        logps_x, y_ids, token_mask, logits_x = self._token_logps_of_given_y(
+        logps_x, y_ids, token_mask, _ = self._token_logps_of_given_y(
             context_texts=x_texts,
             completion_ids_list=completion_ids,
             model=model,
@@ -208,29 +208,14 @@ class OfflineSDPOTrainer(Trainer):
         token_lengths = token_mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)  # (B, 1)
         total_active_tokens = token_mask_f.sum() 
 
-        # Forward KL: KL(p_xo || p_x) = sum_v p_xo(v) * [log p_xo(v) - log p_x(v)]
-        # Chunked over sequence dim to avoid materializing full (B, C', V) intermediate.
-        # Without chunking, (1, 2048, 151K) ≈ 1.16 GB per sample → OOM.
-        # See research/chunked_kl_divergence.md for references.
-        B, C_prime, V = logits_x.shape
-        KL_CHUNK = 1024
-        per_token_kl = torch.zeros(B, C_prime, device=logits_x.device, dtype=logits_x.dtype)
-        for i in range(0, C_prime, KL_CHUNK):
-            j = min(i + KL_CHUNK, C_prime)
-            p_xo_chunk = F.softmax(logits_xo[:, i:j, :], dim=-1).detach()
-            log_p_x_chunk = F.log_softmax(logits_x[:, i:j, :], dim=-1)
-            per_token_kl[:, i:j] = F.kl_div(
-                log_p_x_chunk, p_xo_chunk, reduction='none'
-            ).sum(dim=-1)
+        # Token-level SDPO: policy gradient with per-token advantages
+        per_token_diff = (logps_xo - logps_x).detach()
 
-        per_token_loss = per_token_kl * token_mask_f                 # (B, C')
+        per_token_loss = -(per_token_diff * logps_x) * token_mask_f          # (B, C')
 
         loss_per_seq = per_token_loss.sum(dim=1, keepdim=True) / token_lengths
         loss = loss_per_seq.mean()
         base_loss = loss
-
-        # Keep token-level diff for diagnostics (same as before)
-        per_token_diff = (logps_xo - logps_x).detach()
 
         kl_mean = None
         do_kl = self.kl_beta != 0.0
@@ -273,9 +258,6 @@ class OfflineSDPOTrainer(Trainer):
 
         if model.training:
             with torch.no_grad():
-                self._metrics_buffer["sdpo/fwd_kl_mean"].append(
-                    (per_token_kl * token_mask_f).sum().item() / total_active_tokens.item()
-                )
                 self._metrics_buffer["sdpo/signal_mean"].append(
                     (per_token_diff * token_mask_f).sum().item() / total_active_tokens.item()
                 )
