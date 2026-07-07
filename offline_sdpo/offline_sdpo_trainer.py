@@ -213,7 +213,7 @@ class OfflineSDPOTrainer(Trainer):
         # Without chunking, (1, 2048, 151K) ≈ 1.16 GB per sample → OOM.
         # See research/chunked_kl_divergence.md for references.
         B, C_prime, V = logits_x.shape
-        KL_CHUNK = 128
+        KL_CHUNK = 1024
         per_token_kl = torch.zeros(B, C_prime, device=logits_x.device, dtype=logits_x.dtype)
         for i in range(0, C_prime, KL_CHUNK):
             j = min(i + KL_CHUNK, C_prime)
