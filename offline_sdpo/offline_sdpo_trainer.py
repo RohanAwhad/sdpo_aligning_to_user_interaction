@@ -209,10 +209,19 @@ class OfflineSDPOTrainer(Trainer):
         total_active_tokens = token_mask_f.sum() 
 
         # Forward KL: KL(p_xo || p_x) = sum_v p_xo(v) * [log p_xo(v) - log p_x(v)]
-        # Equivalent to cross_entropy(p_xo, p_x) - entropy(p_xo)
-        p_xo = F.softmax(logits_xo, dim=-1).detach()       # (B, C', V) teacher, no grad
-        log_p_x = F.log_softmax(logits_x, dim=-1)          # (B, C', V) student, with grad
-        per_token_kl = F.kl_div(log_p_x, p_xo, reduction='none').sum(dim=-1)  # (B, C')
+        # Chunked over sequence dim to avoid materializing full (B, C', V) intermediate.
+        # Without chunking, (1, 2048, 151K) ≈ 1.16 GB per sample → OOM.
+        # See research/chunked_kl_divergence.md for references.
+        B, C_prime, V = logits_x.shape
+        KL_CHUNK = 128
+        per_token_kl = torch.zeros(B, C_prime, device=logits_x.device, dtype=logits_x.dtype)
+        for i in range(0, C_prime, KL_CHUNK):
+            j = min(i + KL_CHUNK, C_prime)
+            p_xo_chunk = F.softmax(logits_xo[:, i:j, :], dim=-1).detach()
+            log_p_x_chunk = F.log_softmax(logits_x[:, i:j, :], dim=-1)
+            per_token_kl[:, i:j] = F.kl_div(
+                log_p_x_chunk, p_xo_chunk, reduction='none'
+            ).sum(dim=-1)
 
         per_token_loss = per_token_kl * token_mask_f                 # (B, C')
 
