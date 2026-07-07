@@ -80,6 +80,7 @@ def main():
         per_device_train_batch_size=batch_size,
         gradient_accumulation_steps=grad_accum,
         num_train_epochs=num_epochs,
+        max_steps=500,
 
         fp16=False,
         bf16=True,
@@ -88,7 +89,7 @@ def main():
 
         logging_steps=10,
         save_strategy="steps",
-        save_steps=200,
+        save_steps=50,
         report_to=["wandb"],
 
         warmup_ratio=0.05,
@@ -97,7 +98,6 @@ def main():
 
         remove_unused_columns=False,
         dataloader_num_workers=4,
-        seed=42,
     )
 
     # KL regularization is not used (kl_beta=0, ref_model=None).
