@@ -190,16 +190,16 @@ class OfflineSDPOTrainer(Trainer):
         xo_texts = inputs["conditional_texts"]
         completion_ids = inputs["completion_ids"]  # (B, C)
 
-        # log pi(y | x, o)
+        # log pi(y | x, o) — hindsight (teacher)
         with torch.no_grad():
-            logps_xo, _, _ = self._token_logps_of_given_y(
+            logps_xo, _, _, logits_xo = self._token_logps_of_given_y(
                     context_texts=xo_texts,
                     completion_ids_list=completion_ids,
                     model=model,
                 )  # (B, C')
 
-        # log pi(y | x)
-        logps_x, y_ids, token_mask = self._token_logps_of_given_y(
+        # log pi(y | x) — base (student)
+        logps_x, y_ids, token_mask, logits_x = self._token_logps_of_given_y(
             context_texts=x_texts,
             completion_ids_list=completion_ids,
             model=model,
@@ -209,14 +209,20 @@ class OfflineSDPOTrainer(Trainer):
         token_lengths = token_mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)  # (B, 1)
         total_active_tokens = token_mask_f.sum() 
 
+        # Forward KL: KL(p_xo || p_x) = sum_v p_xo(v) * [log p_xo(v) - log p_x(v)]
+        # Equivalent to cross_entropy(p_xo, p_x) - entropy(p_xo)
+        p_xo = F.softmax(logits_xo, dim=-1).detach()       # (B, C', V) teacher, no grad
+        log_p_x = F.log_softmax(logits_x, dim=-1)          # (B, C', V) student, with grad
+        per_token_kl = F.kl_div(log_p_x, p_xo, reduction='none').sum(dim=-1)  # (B, C')
 
-        per_token_diff = (logps_xo - logps_x).detach()
-
-        per_token_loss = -(per_token_diff * logps_x) * token_mask_f          # (B, C')
+        per_token_loss = per_token_kl * token_mask_f                 # (B, C')
 
         loss_per_seq = per_token_loss.sum(dim=1, keepdim=True) / token_lengths
         loss = loss_per_seq.mean()
         base_loss = loss
+
+        # Keep token-level diff for diagnostics (same as before)
+        per_token_diff = (logps_xo - logps_x).detach()
 
         kl_mean = None
         do_kl = self.kl_beta != 0.0
@@ -259,6 +265,9 @@ class OfflineSDPOTrainer(Trainer):
 
         if model.training:
             with torch.no_grad():
+                self._metrics_buffer["sdpo/fwd_kl_mean"].append(
+                    (per_token_kl * token_mask_f).sum().item() / total_active_tokens.item()
+                )
                 self._metrics_buffer["sdpo/signal_mean"].append(
                     (per_token_diff * token_mask_f).sum().item() / total_active_tokens.item()
                 )
@@ -377,13 +386,14 @@ class OfflineSDPOTrainer(Trainer):
 
         completion_logprobs = -nll  # (B, C)
 
-        # Apply ignore_first_k consistently to both logprobs and mask
+        # Apply ignore_first_k consistently to both logprobs, logits, and mask
         if self.ignore_first_k > 0 and seq_len_y > self.ignore_first_k:
             completion_logprobs = completion_logprobs[:, self.ignore_first_k:]
+            logits_y = logits_y[:, self.ignore_first_k:, :]
             y_ids = y_ids[:, self.ignore_first_k:]
             y_mask = y_mask[:, self.ignore_first_k:]
 
-        return completion_logprobs, y_ids, y_mask
+        return completion_logprobs, y_ids, y_mask, logits_y
 
 
 
@@ -477,7 +487,7 @@ class OfflineSDPOTrainer(Trainer):
         completion_ids = self._rollout_from_policy(model, prompt_texts)  # (B, Tgen)
 
         # log pi_theta(y|x) with grad
-        logps_pol, _, y_mask = self._token_logps_of_given_y(
+        logps_pol, _, y_mask, _ = self._token_logps_of_given_y(
             context_texts=prompt_texts,
             completion_ids_list=completion_ids,
             model=model,
@@ -495,7 +505,7 @@ class OfflineSDPOTrainer(Trainer):
         
         # log pi_ref(y|x) no grad
         with torch.no_grad():
-            logps_ref, _, _ = self._token_logps_of_given_y(
+            logps_ref, _, _, _ = self._token_logps_of_given_y(
                 context_texts=prompt_texts,
                 completion_ids_list=completion_ids,
                 model=self.ref_model,
