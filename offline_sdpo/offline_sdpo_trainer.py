@@ -59,13 +59,12 @@ class OfflineSDPOCollator:
             fb = ex["user_response"].get("value") or ex["user_response"].get("content")
             o = fb.strip()
             
-            # Template C: matches paper Table 1.
-            # Hindsight context appended to the last user message.
+            # SDFT template: golden answer as hindsight context.
+            # Teacher sees context + question + correct answer to guide generation.
             conditional_history = copy.deepcopy(clean_prompt)
             conditional_history[-1]["content"] += (
-                "\n\n=== HINDSIGHT CONTEXT ===\n"
-                "The following is a future user message. "
-                f"Use this to guide your answer to the user prompt: {o}"
+                "\n\nThe following is the correct answer. "
+                f"Use this to guide your response: {o}"
             )
 
 
