@@ -7,7 +7,7 @@ from transformers import (
     AutoTokenizer,
     TrainingArguments,
 )
-from offline_sdpo_trainer import OfflineSDPOCollator, OfflineSDPOTrainer
+from offline_sdpo_trainer import OfflineSDPOCollator, OnPolicySDFTCollator, OfflineSDPOTrainer
 import argparse
 
 
@@ -20,6 +20,11 @@ def parse_args():
     p.add_argument("--train_jsonl", type=str, required=True,
                    help="Path to training JSONL (e.g. wildfeedback_interactions.jsonl)")
     p.add_argument("--num_epochs", type=int, default=2)
+    p.add_argument("--on_policy", action="store_true",
+                   help="On-policy SDFT: generate completions from current model each step")
+    p.add_argument("--gen_max_new_tokens", type=int, default=2048)
+    p.add_argument("--gen_temperature", type=float, default=0.7)
+    p.add_argument("--gen_top_p", type=float, default=0.95)
     return p.parse_args()
 
 
@@ -43,6 +48,11 @@ def main():
     print(f"Batch size: {batch_size}")
     print(f"Grad accum: {grad_accum}")
     print(f"Epochs:     {num_epochs}")
+    print(f"On-policy:  {args.on_policy}")
+    if args.on_policy:
+        print(f"  gen_max_new_tokens: {args.gen_max_new_tokens}")
+        print(f"  gen_temperature:    {args.gen_temperature}")
+        print(f"  gen_top_p:          {args.gen_top_p}")
 
     print(f"Loading data from {args.train_jsonl}...")
     dataset = load_dataset("json", data_files=args.train_jsonl, split="train")
@@ -69,10 +79,13 @@ def main():
     print("pad_token_id:", tokenizer.pad_token_id, "pad_token:", tokenizer.pad_token)
     print("eos_token_id:", tokenizer.eos_token_id, "eos_token:", tokenizer.eos_token)
 
-    collator = OfflineSDPOCollator(
-        tokenizer=tokenizer,
-        max_completion_length=max_completion_len
-    )
+    if args.on_policy:
+        collator = OnPolicySDFTCollator(tokenizer=tokenizer)
+    else:
+        collator = OfflineSDPOCollator(
+            tokenizer=tokenizer,
+            max_completion_length=max_completion_len
+        )
 
     training_args = TrainingArguments(
         output_dir=output_dir,
@@ -102,6 +115,10 @@ def main():
     # KL regularization is not used (kl_beta=0, ref_model=None).
     trainer = OfflineSDPOTrainer(
         ignore_first_k=0,
+        on_policy=args.on_policy,
+        gen_max_new_tokens=args.gen_max_new_tokens,
+        gen_temperature=args.gen_temperature,
+        gen_top_p=args.gen_top_p,
         model=model,
         ref_model=None,
         kl_beta=0,

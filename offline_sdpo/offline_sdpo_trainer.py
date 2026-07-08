@@ -105,10 +105,64 @@ class OfflineSDPOCollator:
 
 
 
+@dataclass
+class OnPolicySDFTCollator:
+    """Collator for on-policy SDFT: returns only prompt texts and conditional texts.
+    Completions are generated on-the-fly by the trainer."""
+    tokenizer: PreTrainedTokenizerBase
+
+    def _normalize_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        normalized = []
+        for msg in messages:
+            if "value" in msg and "content" not in msg:
+                role_map = {"human": "user", "gpt": "assistant", "system": "system"}
+                original_role = msg.get("from", "user")
+                new_role = role_map.get(original_role, original_role)
+                normalized.append({"role": new_role, "content": msg["value"]})
+            else:
+                normalized.append(msg)
+        return normalized
+
+    def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
+        prompt_texts = []
+        conditional_texts = []
+
+        for ex in examples:
+            clean_prompt = self._normalize_messages(ex["prompt"])
+
+            p_text = self.tokenizer.apply_chat_template(
+                clean_prompt, tokenize=False,
+                add_generation_prompt=True, enable_thinking=False,
+            )
+            prompt_texts.append(p_text)
+
+            conditional_history = copy.deepcopy(clean_prompt)
+            fb = ex["user_response"].get("value") or ex["user_response"].get("content")
+            o = fb.strip()
+            conditional_history[-1]["content"] += (
+                "\n\nThe following is the correct answer. "
+                f"Use this to guide your response: {o}"
+            )
+            xo_text = self.tokenizer.apply_chat_template(
+                conditional_history, tokenize=False,
+                add_generation_prompt=True, enable_thinking=False,
+            )
+            conditional_texts.append(xo_text)
+
+        return {
+            "prompt_texts": prompt_texts,
+            "conditional_texts": conditional_texts,
+        }
+
+
 class OfflineSDPOTrainer(Trainer):
     def __init__(
         self,
         ignore_first_k: int = 0,
+        on_policy: bool = False,
+        gen_max_new_tokens: int = 2048,
+        gen_temperature: float = 0.7,
+        gen_top_p: float = 0.95,
         ref_model: Optional[torch.nn.Module] = None,
         kl_beta: float = 0.0,
         kl_max_new_tokens: int = 256,
@@ -120,6 +174,10 @@ class OfflineSDPOTrainer(Trainer):
         **kwargs
     ):
         self.ignore_first_k = ignore_first_k
+        self.on_policy = on_policy
+        self.gen_max_new_tokens = gen_max_new_tokens
+        self.gen_temperature = gen_temperature
+        self.gen_top_p = gen_top_p
 
         self._metrics_buffer = defaultdict(list)
 
@@ -141,7 +199,7 @@ class OfflineSDPOTrainer(Trainer):
         self._micro_in_step = 0
 
     @torch.no_grad()
-    def _rollout_from_policy(self, model, prompt_texts):
+    def _rollout_from_policy(self, model, prompt_texts, use_on_policy_params: bool = False):
         tok = self.processing_class
         device = next(model.parameters()).device  # robust under wrappers
 
@@ -158,11 +216,20 @@ class OfflineSDPOTrainer(Trainer):
         eos_id = tok.eos_token_id
         pad_id = tok.pad_token_id if tok.pad_token_id is not None else eos_id
 
+        if use_on_policy_params:
+            max_new = self.gen_max_new_tokens
+            temperature = self.gen_temperature
+            top_p = self.gen_top_p
+        else:
+            max_new = self.kl_max_new_tokens
+            temperature = self.kl_temperature
+            top_p = self.kl_top_p
+
         gen_cfg = GenerationConfig(
-            max_new_tokens=self.kl_max_new_tokens,
-            do_sample=self.kl_do_sample,
-            temperature=self.kl_temperature,
-            top_p=self.kl_top_p,
+            max_new_tokens=max_new,
+            do_sample=True,
+            temperature=temperature,
+            top_p=top_p,
             eos_token_id=eos_id,
             pad_token_id=pad_id,
             return_dict_in_generate=False,
@@ -182,12 +249,16 @@ class OfflineSDPOTrainer(Trainer):
         
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """
-        Offline loss with per-token updates and length-normalized (per-sequence
-        mean-centered) signal. 
+        SDPO/SDFT loss with per-token REINFORCE and length-normalized signal.
+        When on_policy=True, completions are generated from the current model.
         """
         x_texts = inputs["prompt_texts"]
         xo_texts = inputs["conditional_texts"]
-        completion_ids = inputs["completion_ids"]  # (B, C)
+
+        if self.on_policy:
+            completion_ids = self._rollout_from_policy(model, x_texts, use_on_policy_params=True)
+        else:
+            completion_ids = inputs["completion_ids"]  # (B, C)
 
         # log pi(y | x, o) — hindsight (teacher)
         with torch.no_grad():
