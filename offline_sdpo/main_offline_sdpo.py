@@ -1,3 +1,48 @@
+"""
+
+# export WANDB_MODE=offline
+# export TOKENIZERS_PARALLELISM=false
+# export OUTPUT_DIR=./output/sdft-offpolicy-run2
+#
+# cd /mnt/nvme0n1/rawhad/self_distillation/aligning_lm_from_user_interaction
+# mkdir -p $OUTPUT_DIR
+# CUDA_VISIBLE_DEVICES=4,5,6,7 \
+# accelerate launch \
+#   --config_file multigpu_accelerate_config.yaml \
+#   offline_sdpo/main_offline_sdpo.py \
+#     --base_model Qwen/Qwen3-8B \
+#     --train_jsonl /home/lab/rawhad/sdg-ki-eval/data/combined_cut_5x_transformed_no_thinking.jsonl \
+#     --learning_rate 2e-6 \
+#     --num_epochs 4 \
+#     --save_steps 10 \
+#     --batch_size 1 \
+#     --grad_accum 8 \
+#     --lr_scheduler_type constant 2>&1 | tee $OUTPUT_DIR/train.log
+
+
+export WANDB_MODE=online
+export WANDB_ENTITY=ronny21
+export WANDB_PROJECT=sdpo-amortize
+export WANDB_NAME=small-lm-run-1
+export TOKENIZERS_PARALLELISM=false
+export OUTPUT_DIR=./output/sdft-offpolicy-small-lm-run-1
+cd /mnt/nvme0n1/rawhad/self_distillation/aligning_lm_from_user_interaction
+mkdir -p $OUTPUT_DIR
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
+accelerate launch \
+  --config_file multigpu_accelerate_config.yaml \
+  offline_sdpo/main_offline_sdpo.py \
+    --base_model Qwen/Qwen3-8B \
+    --train_jsonl /home/lab/rawhad/sdg-ki-eval/data/training_data_small_lm_train.jsonl \
+    --learning_rate 2e-6 \
+    --num_epochs 20 \
+    --save_steps 100 \
+    --batch_size 1 \
+    --grad_accum 8 \
+    --lr_scheduler_type constant 2>&1 | tee $OUTPUT_DIR/train.log
+"""
+
+
 # Offline SDPO from User Interactions
 import os
 import torch
