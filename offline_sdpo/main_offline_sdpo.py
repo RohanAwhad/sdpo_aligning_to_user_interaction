@@ -20,6 +20,7 @@ def parse_args():
     p.add_argument("--train_jsonl", type=str, required=True,
                    help="Path to training JSONL (e.g. wildfeedback_interactions.jsonl)")
     p.add_argument("--num_epochs", type=int, default=2)
+    p.add_argument("--save_steps", type=int, default=100)
     p.add_argument("--lr_scheduler_type", type=str, default="cosine",
                    choices=["cosine", "constant", "linear"],
                    help="LR scheduler type (default: cosine)")
@@ -104,7 +105,7 @@ def main():
 
         logging_steps=10,
         save_strategy="steps",
-        save_steps=100,
+        save_steps=args.save_steps,
         report_to=["wandb"],
 
         warmup_ratio=0.05,
