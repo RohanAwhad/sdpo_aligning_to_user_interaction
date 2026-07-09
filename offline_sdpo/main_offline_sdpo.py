@@ -20,6 +20,9 @@ def parse_args():
     p.add_argument("--train_jsonl", type=str, required=True,
                    help="Path to training JSONL (e.g. wildfeedback_interactions.jsonl)")
     p.add_argument("--num_epochs", type=int, default=2)
+    p.add_argument("--lr_scheduler_type", type=str, default="cosine",
+                   choices=["cosine", "constant", "linear"],
+                   help="LR scheduler type (default: cosine)")
     p.add_argument("--on_policy", action="store_true",
                    help="On-policy SDFT: generate completions from current model each step")
     p.add_argument("--gen_max_new_tokens", type=int, default=2048)
@@ -106,7 +109,7 @@ def main():
 
         warmup_ratio=0.05,
         max_grad_norm=10.0,
-        lr_scheduler_type="cosine",
+        lr_scheduler_type=args.lr_scheduler_type,
 
         remove_unused_columns=False,
         dataloader_num_workers=4,
