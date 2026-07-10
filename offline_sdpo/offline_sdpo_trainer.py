@@ -266,14 +266,14 @@ class OfflineSDPOTrainer(Trainer):
 
         # log pi(y | x, o) — hindsight (teacher)
         with torch.no_grad():
-            logps_xo, _, _, _ = self._token_logps_of_given_y(
+            logps_xo, _, _, logits_xo = self._token_logps_of_given_y(
                     context_texts=xo_texts,
                     completion_ids_list=completion_ids,
                     model=model,
                 )  # (B, C')
 
         # log pi(y | x) — base (student)
-        logps_x, y_ids, token_mask, _ = self._token_logps_of_given_y(
+        logps_x, y_ids, token_mask, logits_x = self._token_logps_of_given_y(
             context_texts=x_texts,
             completion_ids_list=completion_ids,
             model=model,
