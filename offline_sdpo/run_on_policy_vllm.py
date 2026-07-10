@@ -64,6 +64,8 @@ def parse_args():
     # vLLM rollout args
     p.add_argument("--gen_max_new_tokens", type=int, default=2048)
     p.add_argument("--gen_temperature", type=float, default=0.7)
+    p.add_argument("--vllm_python", type=str, default=".venv_vllm/bin/python",
+                   help="Path to python in vLLM venv (default: .venv_vllm/bin/python)")
 
     # Internal: rollout subprocess mode
     p.add_argument("--_rollout", action="store_true", help=argparse.SUPPRESS)
@@ -157,8 +159,9 @@ def _gpu_split(num_gpus):
 def run_rollout_subprocess(model_path, input_jsonl, output_jsonl, vllm_gpus, args):
     """Spawn a subprocess to generate rollouts with vLLM on the first half of GPUs."""
     script_path = os.path.abspath(__file__)
+    vllm_python = os.path.abspath(args.vllm_python)
     cmd = [
-        sys.executable, script_path,
+        vllm_python, script_path,
         "--_rollout",
         "--_rollout_model", model_path,
         "--_rollout_input", input_jsonl,
@@ -186,8 +189,12 @@ def run_training_subprocess(model_path, train_jsonl, output_dir, train_gpus, arg
     train_script = os.path.join(script_dir, "main_offline_sdpo.py")
     num_train_gpus = len(train_gpus.split(","))
 
+    # Use training venv python (sibling of this script's venv)
+    repo_root = os.path.dirname(script_dir)
+    train_python = os.path.join(repo_root, ".venv", "bin", "python")
+
     cmd = [
-        sys.executable, "-m", "accelerate.commands.launch",
+        train_python, "-m", "accelerate.commands.launch",
         "--num_processes", str(num_train_gpus),
         "--mixed_precision", "bf16",
         train_script,
