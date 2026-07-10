@@ -163,6 +163,8 @@ class OfflineSDPOTrainer(Trainer):
         gen_max_new_tokens: int = 2048,
         gen_temperature: float = 0.7,
         gen_top_p: float = 0.95,
+        logit_loss: bool = False,
+        logit_loss_topk: int = 16,
         ref_model: Optional[torch.nn.Module] = None,
         kl_beta: float = 0.0,
         kl_max_new_tokens: int = 256,
@@ -178,6 +180,8 @@ class OfflineSDPOTrainer(Trainer):
         self.gen_max_new_tokens = gen_max_new_tokens
         self.gen_temperature = gen_temperature
         self.gen_top_p = gen_top_p
+        self.logit_loss = logit_loss
+        self.logit_loss_topk = logit_loss_topk
 
         self._metrics_buffer = defaultdict(list)
 
@@ -279,10 +283,33 @@ class OfflineSDPOTrainer(Trainer):
         token_lengths = token_mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)  # (B, 1)
         total_active_tokens = token_mask_f.sum() 
 
-        # Token-level SDPO: policy gradient with per-token advantages
         per_token_diff = (logps_xo - logps_x).detach()
 
-        per_token_loss = -(per_token_diff * logps_x) * token_mask_f          # (B, C')
+        if self.logit_loss:
+            # Top-k forward KL: KL(p_xo || p_x) restricted to student's top-k tokens.
+            # Student picks top-k indices per position; teacher supervises on same indices.
+            # Chunked over sequence dim to avoid materializing full (B, C', V).
+            B, C_prime, V = logits_x.shape
+            k = self.logit_loss_topk
+            KL_CHUNK = 128
+            per_token_kl = torch.zeros(B, C_prime, device=logits_x.device, dtype=logits_x.dtype)
+            for i in range(0, C_prime, KL_CHUNK):
+                j = min(i + KL_CHUNK, C_prime)
+                student_chunk = logits_x[:, i:j, :]                          # (B, chunk, V)
+                teacher_chunk = logits_xo[:, i:j, :]                         # (B, chunk, V)
+                topk_indices = student_chunk.topk(k, dim=-1).indices          # (B, chunk, k)
+                student_k = student_chunk.gather(-1, topk_indices)            # (B, chunk, k)
+                teacher_k = teacher_chunk.gather(-1, topk_indices)            # (B, chunk, k)
+                log_p_x_k = F.log_softmax(student_k, dim=-1)
+                p_xo_k = F.softmax(teacher_k, dim=-1).detach()
+                per_token_kl[:, i:j] = F.kl_div(
+                    log_p_x_k, p_xo_k, reduction='none'
+                ).sum(dim=-1)
+
+            per_token_loss = per_token_kl * token_mask_f                      # (B, C')
+        else:
+            # Token-level SDPO: policy gradient with per-token advantages
+            per_token_loss = -(per_token_diff * logps_x) * token_mask_f       # (B, C')
 
         loss_per_seq = per_token_loss.sum(dim=1, keepdim=True) / token_lengths
         loss = loss_per_seq.mean()
@@ -329,6 +356,10 @@ class OfflineSDPOTrainer(Trainer):
 
         if model.training:
             with torch.no_grad():
+                if self.logit_loss:
+                    self._metrics_buffer["sdpo/fwd_kl_mean"].append(
+                        (per_token_kl * token_mask_f).sum().item() / total_active_tokens.item()
+                    )
                 self._metrics_buffer["sdpo/signal_mean"].append(
                     (per_token_diff * token_mask_f).sum().item() / total_active_tokens.item()
                 )

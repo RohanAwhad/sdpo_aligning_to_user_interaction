@@ -74,6 +74,10 @@ def parse_args():
     p.add_argument("--gen_max_new_tokens", type=int, default=2048)
     p.add_argument("--gen_temperature", type=float, default=0.7)
     p.add_argument("--gen_top_p", type=float, default=0.95)
+    p.add_argument("--logit_loss", action="store_true",
+                   help="Use top-k forward KL distillation loss instead of token-level SDPO")
+    p.add_argument("--logit_loss_topk", type=int, default=16,
+                   help="Number of top student tokens for logit-level KL (default: 16)")
     return p.parse_args()
 
 
@@ -98,6 +102,7 @@ def main():
     print(f"Grad accum: {grad_accum}")
     print(f"Epochs:     {num_epochs}")
     print(f"On-policy:  {args.on_policy}")
+    print(f"Logit loss: {args.logit_loss}" + (f" (top-k={args.logit_loss_topk})" if args.logit_loss else ""))
     if args.on_policy:
         print(f"  gen_max_new_tokens: {args.gen_max_new_tokens}")
         print(f"  gen_temperature:    {args.gen_temperature}")
@@ -168,6 +173,8 @@ def main():
         gen_max_new_tokens=args.gen_max_new_tokens,
         gen_temperature=args.gen_temperature,
         gen_top_p=args.gen_top_p,
+        logit_loss=args.logit_loss,
+        logit_loss_topk=args.logit_loss_topk,
         model=model,
         ref_model=None,
         kl_beta=0,
