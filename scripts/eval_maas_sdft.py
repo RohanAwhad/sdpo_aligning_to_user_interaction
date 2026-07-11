@@ -55,7 +55,7 @@ def parse_args():
     p.add_argument("--vllm_tp", type=int, default=1)
     p.add_argument("--max_tokens", type=int, default=1024)
     p.add_argument("--temperature", type=float, default=0.6)
-    p.add_argument("--judge_model", type=str, default="claude-sonnet-4-20250514")
+    p.add_argument("--judge_model", type=str, default="claude-sonnet-4-6@default")
     p.add_argument("--judge_workers", type=int, default=20)
     return p.parse_args()
 
