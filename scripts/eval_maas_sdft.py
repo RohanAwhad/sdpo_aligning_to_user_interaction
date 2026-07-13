@@ -25,18 +25,24 @@ os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 
 JUDGE_SYSTEM = """\
-You are a strict factual correctness evaluator. You will be given a question, a golden (reference) answer, and a candidate answer.
+You are a strict factual correctness evaluator. You will be given a question, a golden (reference) answer, source documentation, and a candidate answer.
 
 Your task:
-- Judge whether the candidate answer is factually correct with respect to the golden answer.
-- The candidate does NOT need to be word-for-word identical. It must convey the same key facts.
-- Minor phrasing differences are acceptable. Missing key facts or wrong facts are NOT.
+- Judge whether the candidate answer is factually correct with respect to the source documentation AND the golden answer.
+- The candidate does NOT need to be word-for-word identical to the golden answer. It must convey the same key facts.
+- If the candidate contains correct facts from the source documentation that the golden answer omits, that is NOT a failure.
+- If the candidate contradicts the source documentation, that IS a failure.
+- Missing key facts from the golden answer IS a failure.
+- Minor phrasing differences are acceptable.
 - Respond with exactly one line: PASS or FAIL
 - Then a brief rationale (1-2 sentences max)."""
 
 JUDGE_USER_TEMPLATE = """\
 Question:
 {question}
+
+Source Documentation:
+{source_doc}
 
 Golden Answer:
 {golden_answer}
@@ -115,12 +121,13 @@ def generate_all(model_path, all_prompts, args):
     return texts, tokenizer
 
 
-def judge_single(client, model, question, golden_answer, candidate_answer, max_retries=5):
+def judge_single(client, model, question, golden_answer, candidate_answer, source_doc, max_retries=5):
     """Call Anthropic Vertex to judge a single answer. Returns (pass_bool, rationale)."""
     user_msg = JUDGE_USER_TEMPLATE.format(
         question=question,
         golden_answer=golden_answer,
         candidate_answer=candidate_answer,
+        source_doc=source_doc,
     )
 
     for attempt in range(max_retries):
@@ -142,27 +149,45 @@ def judge_single(client, model, question, golden_answer, candidate_answer, max_r
                 return False, f"JUDGE_ERROR: {e}"
 
 
+def judge_single_majority(client, model, question, golden_answer, candidate_answer, source_doc, num_votes=3):
+    """Call judge 3 times, return majority vote. Returns (pass_bool, rationale, votes)."""
+    votes = []
+    rationales = []
+    for _ in range(num_votes):
+        passed, rationale = judge_single(client, model, question, golden_answer, candidate_answer, source_doc)
+        votes.append(passed)
+        rationales.append(rationale)
+    
+    pass_count = sum(votes)
+    majority_pass = pass_count >= (num_votes // 2 + 1)
+    # Use rationale from the majority side
+    majority_rationale = next(r for v, r in zip(votes, rationales) if v == majority_pass)
+    return majority_pass, majority_rationale, votes
+
+
 def judge_all(records, no_ctx_answers, with_ctx_answers, args):
-    """Judge all 200 answers using ThreadPoolExecutor."""
+    """Judge all answers using ThreadPoolExecutor with majority voting (3x per answer)."""
     from anthropic import AnthropicVertex
     client = AnthropicVertex()
 
     results = []
-    tasks = []  # (index, mode, question, golden, candidate)
+    tasks = []  # (index, mode, question, golden, candidate, source_doc)
 
     for i, rec in enumerate(records):
         question = rec["prompt"][0].get("value") or rec["prompt"][0].get("content")
         golden = rec["user_response"].get("value") or rec["user_response"].get("content")
-        tasks.append((i, "no_context", question, golden, no_ctx_answers[i]))
-        tasks.append((i, "with_context", question, golden, with_ctx_answers[i]))
+        source_doc = rec.get("enriched_user_response", {}).get("value") or rec.get("enriched_user_response", {}).get("content", "")
+        tasks.append((i, "no_context", question, golden, no_ctx_answers[i], source_doc))
+        tasks.append((i, "with_context", question, golden, with_ctx_answers[i], source_doc))
 
-    judgments = {}  # (index, mode) -> (passed, rationale)
+    judgments = {}  # (index, mode) -> (passed, rationale, votes)
 
-    print(f"[Judge] Judging {len(tasks)} answers with {args.judge_model} ({args.judge_workers} workers)...")
+    total_calls = len(tasks) * 3  # 3 votes per task
+    print(f"[Judge] Judging {len(tasks)} answers x3 votes = {total_calls} calls with {args.judge_model} ({args.judge_workers} workers)...")
     with ThreadPoolExecutor(max_workers=args.judge_workers) as pool:
         future_to_key = {}
-        for idx, mode, q, g, c in tasks:
-            fut = pool.submit(judge_single, client, args.judge_model, q, g, c)
+        for idx, mode, q, g, c, s in tasks:
+            fut = pool.submit(judge_single_majority, client, args.judge_model, q, g, c, s)
             future_to_key[fut] = (idx, mode)
 
         done = 0
@@ -178,8 +203,8 @@ def judge_all(records, no_ctx_answers, with_ctx_answers, args):
         question = rec["prompt"][0].get("value") or rec["prompt"][0].get("content")
         golden = rec["user_response"].get("value") or rec["user_response"].get("content")
 
-        no_ctx_pass, no_ctx_rationale = judgments[(i, "no_context")]
-        with_ctx_pass, with_ctx_rationale = judgments[(i, "with_context")]
+        no_ctx_pass, no_ctx_rationale, no_ctx_votes = judgments[(i, "no_context")]
+        with_ctx_pass, with_ctx_rationale, with_ctx_votes = judgments[(i, "with_context")]
 
         results.append({
             "question": question,
@@ -187,9 +212,11 @@ def judge_all(records, no_ctx_answers, with_ctx_answers, args):
             "no_context_answer": no_ctx_answers[i],
             "no_context_pass": no_ctx_pass,
             "no_context_rationale": no_ctx_rationale,
+            "no_context_votes": no_ctx_votes,
             "with_context_answer": with_ctx_answers[i],
             "with_context_pass": with_ctx_pass,
             "with_context_rationale": with_ctx_rationale,
+            "with_context_votes": with_ctx_votes,
         })
 
     return results
