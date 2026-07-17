@@ -179,7 +179,7 @@ def judge_all(records, no_ctx_answers, with_ctx_answers, args):
         golden = rec["user_response"].get("value") or rec["user_response"].get("content")
         source_doc = rec.get("enriched_user_response", {}).get("value") or rec.get("enriched_user_response", {}).get("content", "")
         tasks.append((i, "no_context", question, golden, no_ctx_answers[i], source_doc))
-        tasks.append((i, "with_context", question, golden, with_ctx_answers[i], source_doc))
+        if not args.default_mode: tasks.append((i, "with_context", question, golden, with_ctx_answers[i], source_doc))
 
     judgments = {}  # (index, mode) -> (passed, rationale, votes)
 
@@ -205,7 +205,7 @@ def judge_all(records, no_ctx_answers, with_ctx_answers, args):
         golden = rec["user_response"].get("value") or rec["user_response"].get("content")
 
         no_ctx_pass, no_ctx_rationale, no_ctx_votes = judgments[(i, "no_context")]
-        with_ctx_pass, with_ctx_rationale, with_ctx_votes = judgments[(i, "with_context")]
+        if not args.default_mode: with_ctx_pass, with_ctx_rationale, with_ctx_votes = judgments[(i, "with_context")]
 
         results.append({
             "question": question,
@@ -214,6 +214,8 @@ def judge_all(records, no_ctx_answers, with_ctx_answers, args):
             "no_context_pass": no_ctx_pass,
             "no_context_rationale": no_ctx_rationale,
             "no_context_votes": no_ctx_votes,
+        })
+        if not args.default_mode: results[-1].update({
             "with_context_answer": with_ctx_answers[i],
             "with_context_pass": with_ctx_pass,
             "with_context_rationale": with_ctx_rationale,
@@ -253,7 +255,7 @@ def main():
     )
 
     no_ctx_prompts, with_ctx_prompts = build_prompts(records, tokenizer)
-    all_prompts = no_ctx_prompt if args.default_mode else no_ctx_prompts + with_ctx_prompts
+    all_prompts = no_ctx_prompts if args.default_mode else no_ctx_prompts + with_ctx_prompts
 
     print(f"[vLLM] Generating {len(all_prompts)} completions...")
     outputs = llm.generate(all_prompts, sampling_params)
@@ -280,7 +282,7 @@ def main():
 
     # Step 4: Print summary
     no_ctx_pass = sum(1 for r in results if r["no_context_pass"])
-    with_ctx_pass = sum(1 for r in results if r["with_context_pass"])
+    if not args.default_mode: with_ctx_pass = sum(1 for r in results if r["with_context_pass"])
 
     print(f"\n{'='*40}")
     print(f"Model: {args.model}")
