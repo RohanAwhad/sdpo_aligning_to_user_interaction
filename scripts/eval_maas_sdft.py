@@ -63,6 +63,7 @@ def parse_args():
     p.add_argument("--temperature", type=float, default=0.6)
     p.add_argument("--judge_model", type=str, default="claude-sonnet-4-6@default")
     p.add_argument("--judge_workers", type=int, default=20)
+    p.add_argument("--default-mode", action="store_true", default=20)
     return p.parse_args()
 
 
@@ -252,7 +253,7 @@ def main():
     )
 
     no_ctx_prompts, with_ctx_prompts = build_prompts(records, tokenizer)
-    all_prompts = no_ctx_prompts + with_ctx_prompts
+    all_prompts = no_ctx_prompt if args.default_mode else no_ctx_prompts + with_ctx_prompts
 
     print(f"[vLLM] Generating {len(all_prompts)} completions...")
     outputs = llm.generate(all_prompts, sampling_params)
@@ -285,7 +286,7 @@ def main():
     print(f"Model: {args.model}")
     print(f"{'='*40}")
     print(f"no_context:   {no_ctx_pass}/{n} ({100*no_ctx_pass/n:.1f}%)")
-    print(f"with_context: {with_ctx_pass}/{n} ({100*with_ctx_pass/n:.1f}%)")
+    if not args.default_mode: print(f"with_context: {with_ctx_pass}/{n} ({100*with_ctx_pass/n:.1f}%)")
     print(f"{'='*40}")
     print(f"Results saved to {output_path}")
 
